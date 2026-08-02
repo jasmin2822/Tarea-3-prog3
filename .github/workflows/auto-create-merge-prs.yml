@@ -1,0 +1,95 @@
+name: Auto Create and Merge PRs
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-and-merge-prs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create and merge PRs (using Octokit)
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const owner = 'jasmin2822';
+            const repo = 'Tarea-3-prog3';
+            const branches = [
+              'feature/create-item',
+              'feature/delete-item',
+              'feature/project-setup',
+              'feature/read-items',
+              'feature/update-item'
+            ];
+            const bases = ['dev', 'qa', 'main'];
+            const merge_method = 'merge'; // 'merge', 'squash', or 'rebase'
+
+            for (const head of branches) {
+              for (const base of bases) {
+                const title = `Merge ${head} into ${base}`;
+                const body = `PR auto-creado: ${head} → ${base}. Generado por workflow para cumplir las pautas.`;
+                core.info(`Processing: ${head} -> ${base}`);
+
+                // Check for existing PRs with same head and base
+                let existingPRs = [];
+                try {
+                  const listResp = await github.rest.pulls.list({ owner, repo, head: `${owner}:${head}`, base, state: 'all' });
+                  existingPRs = listResp.data;
+                } catch (err) {
+                  core.warning(`Failed to list PRs for ${head} -> ${base}: ${err}`);
+                }
+
+                if (existingPRs.length > 0) {
+                  const pr = existingPRs[0];
+                  core.info(`Found existing PR #${pr.number} (state=${pr.state}, merged=${pr.merged}) for ${head} -> ${base}`);
+                  if (pr.merged) {
+                    core.info(`Already merged: #${pr.number}`);
+                    continue;
+                  }
+                  if (pr.state === 'open') {
+                    // Try to merge the open PR
+                    try {
+                      await github.rest.pulls.merge({ owner, repo, pull_number: pr.number, merge_method });
+                      core.info(`Merged existing PR #${pr.number} for ${head} -> ${base}`);
+                    } catch (mergeErr) {
+                      core.warning(`Failed to merge existing PR #${pr.number}: ${mergeErr}`);
+                      // leave the PR open for manual resolution
+                    }
+                    continue;
+                  }
+                  // pr.state === 'closed' && not merged
+                  core.info(`PR #${pr.number} is closed and not merged. Creating a new PR attempt.`);
+                }
+
+                // Create a new PR
+                let createdPR = null;
+                try {
+                  const createResp = await github.rest.pulls.create({ owner, repo, title, head, base, body });
+                  createdPR = createResp.data;
+                  core.info(`Created PR #${createdPR.number} ${createdPR.html_url}`);
+                } catch (createErr) {
+                  core.warning(`Failed to create PR ${head} -> ${base}: ${createErr}`);
+                  // If creation failed due to no changes or similar, skip
+                  continue;
+                }
+
+                // Attempt to merge
+                try {
+                  await github.rest.pulls.merge({ owner, repo, pull_number: createdPR.number, merge_method });
+                  core.info(`Merged PR #${createdPR.number} for ${head} -> ${base}`);
+                } catch (mergeErr) {
+                  core.warning(`Failed to merge PR #${createdPR.number}: ${mergeErr}`);
+                  // Leave for manual resolution
+                }
+
+              }
+            }
